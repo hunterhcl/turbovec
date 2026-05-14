@@ -189,7 +189,6 @@ _SCORE_BATCHED_SOURCE = r"""
 
     threadgroup uchar codes_local[DIM];
     threadgroup float cent_local[N_LEVELS];
-    threadgroup float partials[QB][TG_SIZE];
 
     if (tid < N_LEVELS) {
         cent_local[tid] = centroids[tid];
@@ -221,23 +220,15 @@ _SCORE_BATCHED_SOURCE = r"""
         }
     }
 
+    // Simdgroup reduction — one instruction per query vs log2(TG_SIZE)
+    // barriers through threadgroup memory. TG_SIZE must equal the
+    // simdgroup width (32 on Apple GPUs) for this to be a single op.
     for (uint qi = 0; qi < QB; qi++) {
-        partials[qi][tid] = accum[qi];
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    for (uint s = TG_SIZE / 2; s > 0; s >>= 1) {
-        if (tid < s) {
-            for (uint qi = 0; qi < QB; qi++) {
-                partials[qi][tid] += partials[qi][tid + s];
-            }
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+        accum[qi] = simd_sum(accum[qi]);
     }
 
     if (tid < QB) {
-        uint q = q_base + tid;
-        scores[q * n_db + v] = partials[tid][0] * norms[v];
+        scores[(q_base + tid) * n_db + v] = accum[tid] * norms[v];
     }
 """
 
