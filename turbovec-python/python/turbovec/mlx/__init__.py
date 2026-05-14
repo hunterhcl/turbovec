@@ -60,7 +60,7 @@ class TurboQuantIndex:
 
         self._quantize_pack = _kernels.build_quantize_pack_kernel(dim, bit_width)
         self._score = _kernels.build_score_kernel(dim, bit_width)
-        self._qb = 16
+        self._qb = 32
         self._vb = 1
         self._score_batched = _kernels.build_score_batched_kernel(
             dim, bit_width, qb=self._qb, vb=self._vb,

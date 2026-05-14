@@ -6,7 +6,7 @@
   "n_query": 1000,
   "k": 64,
   "n_trials": 5,
-  "cpu_ms_per_query": 1.964,
-  "gpu_ms_per_query": 0.229,
-  "speedup": 8.59
+  "cpu_ms_per_query": 2.011,
+  "gpu_ms_per_query": 0.207,
+  "speedup": 9.71
 }

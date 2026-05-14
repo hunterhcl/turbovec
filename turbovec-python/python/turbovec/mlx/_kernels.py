@@ -178,7 +178,11 @@ _SCORE_BATCHED_SOURCE = r"""
     uint q_base = q_block * QB;
     uint n_db = threadgroups_per_grid.y * VB;
 
-    threadgroup uchar codes_local[VB][DIM];
+    // Per-coord centroid value cached as half — fuses the
+    // `codes_local[j] -> cent_local[code]` two-read dependent chain
+    // into a single TG read in the inner loop, and halves the TG
+    // memory traffic.
+    threadgroup half cent_for_coord[VB][DIM];
     threadgroup float cent_local[N_LEVELS];
 
     if (tid < N_LEVELS) {
@@ -197,7 +201,7 @@ _SCORE_BATCHED_SOURCE = r"""
                 for (uint p = 0; p < BIT_WIDTH; p++) {
                     code |= ((bits[p] >> (7 - i)) & 1u) << p;
                 }
-                codes_local[vi][bp * 8 + i] = code;
+                cent_for_coord[vi][bp * 8 + i] = half(cent_local[code]);
             }
         }
     }
@@ -209,14 +213,10 @@ _SCORE_BATCHED_SOURCE = r"""
     }
 
     for (uint j = tid; j < DIM; j += TG_SIZE) {
-        float q_vals[QB];
-        for (uint qi = 0; qi < QB; qi++) {
-            q_vals[qi] = float(q_rot[(q_base + qi) * DIM + j]);
-        }
         for (uint vi = 0; vi < VB; vi++) {
-            float cent_val = cent_local[codes_local[vi][j]];
+            float cent_val = float(cent_for_coord[vi][j]);
             for (uint qi = 0; qi < QB; qi++) {
-                accum[vi][qi] += q_vals[qi] * cent_val;
+                accum[vi][qi] += float(q_rot[(q_base + qi) * DIM + j]) * cent_val;
             }
         }
     }
@@ -227,10 +227,12 @@ _SCORE_BATCHED_SOURCE = r"""
         }
     }
 
-    // VB * QB outputs per threadgroup, one per thread.
-    if (tid < VB * QB) {
-        uint vi = tid / QB;
-        uint qi = tid % QB;
+    // VB * QB outputs per threadgroup. After simd_sum, every thread
+    // holds the same reduced value for each (vi, qi), so any thread
+    // can write any output.
+    for (uint out = tid; out < VB * QB; out += TG_SIZE) {
+        uint vi = out / QB;
+        uint qi = out % QB;
         scores[(q_base + qi) * n_db + (v_base + vi)] = accum[vi][qi] * norms[v_base + vi];
     }
 """
@@ -259,8 +261,11 @@ def build_score_batched_kernel(
         raise ValueError(f"qb must be a power of 2, got {qb}")
     if vb < 1 or vb & (vb - 1):
         raise ValueError(f"vb must be a power of 2, got {vb}")
-    if vb * qb > tg_size:
-        raise ValueError(f"vb * qb ({vb * qb}) must be <= tg_size ({tg_size})")
+    if vb * qb > tg_size and (vb * qb) % tg_size != 0:
+        raise ValueError(
+            f"vb * qb ({vb * qb}) must be <= tg_size ({tg_size}) "
+            f"or a multiple of it"
+        )
 
     n_levels = 1 << bit_width
     plane_size = dim // 8
